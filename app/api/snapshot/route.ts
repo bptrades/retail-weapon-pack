@@ -72,29 +72,50 @@ export async function GET() {
   }
 
   // Pull last 240 minutes of 1-min bars (enough for RSI/ATR + trend)
-  const start = isoMinutesAgo(240);
+  async function fetchBars(startISO: string) {
   const url =
-    `https://data.alpaca.markets/v2/stocks/bars?symbols=SPY&timeframe=1Min&start=${encodeURIComponent(start)}` +
+    `https://data.alpaca.markets/v2/stocks/bars?symbols=SPY&timeframe=1Min&start=${encodeURIComponent(startISO)}` +
     `&limit=10000&feed=${encodeURIComponent(feed)}`;
 
   const res = await fetch(url, {
     headers: {
-      "APCA-API-KEY-ID": key,
-      "APCA-API-SECRET-KEY": secret
+      "APCA-API-KEY-ID": key!,
+      "APCA-API-SECRET-KEY": secret!
     }
   });
 
-  if (!res.ok) {
-    const raw = await res.text();
-    return NextResponse.json({ error: "Alpaca data error", status: res.status, raw }, { status: 502 });
-  }
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`Alpaca error ${res.status}: ${raw}`);
 
-  const data = await res.json();
-  const bars = data?.bars?.SPY as any[] | undefined;
+  const json = JSON.parse(raw);
+  return (json?.bars?.SPY as any[] | undefined) ?? [];
+}
 
-  if (!bars || bars.length < 30) {
-    return NextResponse.json({ error: "Not enough bars returned", barsCount: bars?.length ?? 0 }, { status: 502 });
-  }
+// Try recent window first (good during market hours)
+let bars: any[] = [];
+try {
+  const startRecent = new Date(Date.now() - 240 * 60_000).toISOString();
+  bars = await fetchBars(startRecent);
+} catch {
+  bars = [];
+}
+
+// Fallback: last 7 days (works outside market hours)
+if (bars.length < 30) {
+  const start7d = new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString();
+  bars = await fetchBars(start7d);
+}
+
+// Still not enough? return helpful error
+if (bars.length < 30) {
+  return NextResponse.json(
+    { error: "Not enough bars returned. Likely market closed or feed limited. Try during market hours or keep feed=iex.", barsCount: bars.length },
+    { status: 502 }
+  );
+}
+
+// Use only the most recent 240 bars for indicators
+if (bars.length > 240) bars = bars.slice(-240);
 
   const close = bars.map(b => b.c);
   const high = bars.map(b => b.h);
