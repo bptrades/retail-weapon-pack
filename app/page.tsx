@@ -1,6 +1,18 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 type PlanItem = { if: string; then: string; risk: string };
 type Plan = {
@@ -8,7 +20,7 @@ type Plan = {
   thesis: string;
   playbook: PlanItem[];
   danger_zones: string[];
-  confidence: number;
+  confidence: number; // kept for compatibility, but UI uses momentum_score -> 1-5 label
 };
 
 type SnapshotHistoryItem = {
@@ -40,6 +52,8 @@ type BiasFlipAlert = {
 const defaultInput = {
   symbol: "SPY",
   timestamp: "2026-02-17T12:00:00-05:00",
+  market_open: false,
+  using_last_session_data: true,
   price: 502.85,
   vwap: 501.9,
   vwap_state: "above",
@@ -51,10 +65,10 @@ const defaultInput = {
   expected_move_today: 2.1,
   volume_state: "above_avg",
   key_levels: {
-    premarket_high: 505.1,
-    premarket_low: 498.9,
-    yesterday_high: 504.4,
-    yesterday_low: 497.8
+    session_high: 505.1,
+    session_low: 498.9,
+    high_60m: 504.4,
+    low_60m: 497.8
   },
   momentum_score: 7.4
 };
@@ -106,21 +120,84 @@ function biasGuessFromScore(score: number | null | undefined): "bullish" | "bear
   return "neutral";
 }
 
-function formatBias(b: "bullish" | "bearish" | "neutral") {
-  return b.toUpperCase();
+function safeTicker(raw: string) {
+  return raw.toUpperCase().trim().replace(/\s+/g, "");
+}
+function isValidTicker(sym: string) {
+  return /^[A-Z.\-]{1,10}$/.test(sym);
+}
+function fmtTime(tsISO: string) {
+  return new Date(tsISO).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatXAlert(alert: BiasFlipAlert) {
-  const t = new Date(alert.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const p = typeof alert.price === "number" ? alert.price.toFixed(2) : "—";
-  const s = typeof alert.score === "number" ? alert.score.toFixed(1) : "—";
-  return [
-    `⚡ Bias Flip Alert: ${alert.symbol}`,
-    `${formatBias(alert.from)} → ${formatBias(alert.to)} @ ${t}`,
-    `Price: ${p} • Score: ${s}`,
-    ``,
-    `Not financial advice.`
-  ].join("\n");
+function tvSymbolForInput(raw: string) {
+  const sym = raw.toUpperCase().trim();
+
+  const indexMap: Record<string, string> = {
+    SPX: "SP:SPX",
+    NDX: "NASDAQ:NDX",
+    VIX: "CBOE:VIX",
+    DJI: "DJ:DJI",
+    RUT: "RUSSELL:RUT"
+  };
+  if (indexMap[sym]) return indexMap[sym];
+
+  const etfMap: Record<string, string> = {
+    SPY: "AMEX:SPY",
+    QQQ: "NASDAQ:QQQ",
+    IWM: "AMEX:IWM",
+    DIA: "AMEX:DIA"
+  };
+  if (etfMap[sym]) return etfMap[sym];
+
+  // Default: let TradingView auto-detect exchange.
+  return sym;
+}
+
+function TradingViewChart({ symbol }: { symbol: string }) {
+  const tvSymbol = tvSymbolForInput(symbol);
+  const src =
+    `https://s.tradingview.com/widgetembed/?` +
+    `symbol=${encodeURIComponent(tvSymbol)}` +
+    `&interval=5` +
+    `&hidesidetoolbar=1` +
+    `&symboledit=1` +
+    `&saveimage=0` +
+    `&toolbarbg=0F172A` +
+    `&studies=%5B%5D` +
+    `&theme=dark` +
+    `&style=1` +
+    `&timezone=America%2FNew_York` +
+    `&withdateranges=1` +
+    `&hidevolume=0`;
+
+  return (
+    <div className="h-[520px] w-full overflow-hidden rounded-2xl border border-white/10 bg-black/20">
+      <iframe title="chart" src={src} className="h-full w-full border-0" allowFullScreen />
+    </div>
+  );
+}
+
+function applySymbolToPlan(plan: any, symbol: string) {
+  const sym = symbol.toUpperCase();
+  if (!plan) return plan;
+
+  const replaceSym = (s: any) =>
+    typeof s === "string" ? s.replaceAll("SPY", sym).replaceAll("Spy", sym).replaceAll("spy", sym) : s;
+
+  return {
+    ...plan,
+    thesis: replaceSym(plan.thesis),
+    playbook: Array.isArray(plan.playbook)
+      ? plan.playbook.map((p: any) => ({
+          ...p,
+          if: replaceSym(p.if),
+          then: replaceSym(p.then),
+          risk: replaceSym(p.risk)
+        }))
+      : plan.playbook,
+    danger_zones: Array.isArray(plan.danger_zones) ? plan.danger_zones.map(replaceSym) : plan.danger_zones
+  };
 }
 
 function formatXPost(input: any, plan: Plan) {
@@ -154,112 +231,13 @@ function formatXPost(input: any, plan: Plan) {
   ].join("\n");
 }
 
-function pillToneFromBias(bias?: string) {
-  const b = String(bias || "").toLowerCase();
-  if (b === "bullish") return { bg: "#ecfdf5", border: "#34d399", text: "#065f46" };
-  if (b === "bearish") return { bg: "#fef2f2", border: "#f87171", text: "#7f1d1d" };
-  return { bg: "#f3f4f6", border: "#9ca3af", text: "#111827" };
-}
-
-function Stat({ label, value }: { label: string; value: any }) {
-  return (
-    <div
-      style={{
-        padding: 12,
-        borderRadius: 14,
-        border: "1px solid rgba(255,255,255,0.10)",
-        background: "rgba(0,0,0,0.20)"
-      }}
-    >
-      <div style={{ fontSize: 11, opacity: 0.7 }}>{label}</div>
-      <div style={{ marginTop: 6, fontWeight: 700 }}>{value ?? "—"}</div>
-    </div>
+function formatXAlert(alert: BiasFlipAlert) {
+  const t = new Date(alert.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const p = typeof alert.price === "number" ? alert.price.toFixed(2) : "—";
+  const s = typeof alert.score === "number" ? alert.score.toFixed(1) : "—";
+  return [`⚡ Bias Flip Alert: ${alert.symbol}`, `${alert.from.toUpperCase()} → ${alert.to.toUpperCase()} @ ${t}`, `Price: ${p} • Score: ${s}`, ``, `Not financial advice.`].join(
+    "\n"
   );
-}
-
-function tvSymbolForInput(raw: string) {
-  const sym = raw.toUpperCase().trim();
-
-  const indexMap: Record<string, string> = {
-    SPX: "SP:SPX",
-    NDX: "NASDAQ:NDX",
-    VIX: "CBOE:VIX",
-    DJI: "DJ:DJI",
-    RUT: "RUSSELL:RUT"
-  };
-  if (indexMap[sym]) return indexMap[sym];
-
-  const etfMap: Record<string, string> = {
-    SPY: "AMEX:SPY",
-    QQQ: "NASDAQ:QQQ",
-    IWM: "AMEX:IWM",
-    DIA: "AMEX:DIA"
-  };
-  if (etfMap[sym]) return etfMap[sym];
-
-  return sym;
-}
-
-function TradingViewChart({ symbol }: { symbol: string }) {
-  const tvSymbol = tvSymbolForInput(symbol);
-  const src =
-    `https://s.tradingview.com/widgetembed/?` +
-    `symbol=${encodeURIComponent(tvSymbol)}` +
-    `&interval=5` +
-    `&hidesidetoolbar=1` +
-    `&symboledit=1` +
-    `&saveimage=0` +
-    `&toolbarbg=0F172A` +
-    `&studies=%5B%5D` +
-    `&theme=dark` +
-    `&style=1` +
-    `&timezone=America%2FNew_York` +
-    `&withdateranges=1` +
-    `&hidevolume=0`;
-
-  return (
-    <div
-      style={{
-        height: 420,
-        borderRadius: 16,
-        overflow: "hidden",
-        border: "1px solid rgba(255,255,255,0.10)",
-        background: "rgba(0,0,0,0.25)"
-      }}
-    >
-      <iframe title="chart" src={src} style={{ width: "100%", height: "100%", border: 0 }} allowFullScreen />
-    </div>
-  );
-}
-
-function applySymbolToPlan(plan: any, symbol: string) {
-  const sym = symbol.toUpperCase();
-  if (!plan) return plan;
-
-  const replaceSym = (s: any) =>
-    typeof s === "string" ? s.replaceAll("SPY", sym).replaceAll("Spy", sym).replaceAll("spy", sym) : s;
-
-  return {
-    ...plan,
-    thesis: replaceSym(plan.thesis),
-    playbook: Array.isArray(plan.playbook)
-      ? plan.playbook.map((p: any) => ({ ...p, if: replaceSym(p.if), then: replaceSym(p.then), risk: replaceSym(p.risk) }))
-      : plan.playbook,
-    danger_zones: Array.isArray(plan.danger_zones) ? plan.danger_zones.map(replaceSym) : plan.danger_zones
-  };
-}
-
-function safeTicker(raw: string) {
-  return raw.toUpperCase().trim().replace(/\s+/g, "");
-}
-
-function isValidTicker(sym: string) {
-  return /^[A-Z.\-]{1,10}$/.test(sym);
-}
-
-function fmtTime(tsISO: string) {
-  const d = new Date(tsISO);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function playBeep() {
@@ -285,33 +263,38 @@ function fmtMoney(n: number | null | undefined) {
   if (typeof n !== "number" || !isFinite(n)) return "—";
   return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 }
-
 function fmtNum(n: number | null | undefined, digits = 2) {
   if (typeof n !== "number" || !isFinite(n)) return "—";
   return n.toFixed(digits);
 }
 
-export default function Home() {
+function Metric({ label, value }: { label: string; value: any }) {
+  return (
+    <Card className="border-white/10 bg-white/5">
+      <CardContent className="p-4">
+        <div className="text-xs text-slate-400">{label}</div>
+        <div className="mt-2 text-lg font-semibold">{value ?? "—"}</div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export default function Page() {
   const [symbol, setSymbol] = useState("SPY");
   const [inputJsonText, setInputJsonText] = useState(JSON.stringify(defaultInput, null, 2));
-
-  const [loading, setLoading] = useState(false);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [error, setError] = useState("");
 
   const [marketOpen, setMarketOpen] = useState(false);
   const [usingLastSession, setUsingLastSession] = useState(false);
-
-  const [toast, setToast] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   // Auto refresh
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshSeconds, setRefreshSeconds] = useState(60);
-  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-
   const inFlightRef = useRef(false);
 
-  // AI quota guardrails
+  // AI cooldown
   const [aiCooldownUntil, setAiCooldownUntil] = useState<number>(0);
   const aiInFlightRef = useRef(false);
 
@@ -326,20 +309,40 @@ export default function Home() {
   const HISTORY_MAX = 120;
   const HISTORY_PER_SYMBOL_MAX = 25;
 
-  // Bias flip alerts
+  // Bias flip
   const [biasFlip, setBiasFlip] = useState<BiasFlipAlert | null>(null);
   const [biasFlipSound, setBiasFlipSound] = useState(true);
   const lastFlipKeyRef = useRef<string>("");
 
-  // ✅ Step 5: Risk calculator state
+  // Settings
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Risk
   const [acctSize, setAcctSize] = useState<number>(5000);
-  const [riskPct, setRiskPct] = useState<number>(1); // %
+  const [riskPct, setRiskPct] = useState<number>(1);
   const [entry, setEntry] = useState<number>(0);
   const [stop, setStop] = useState<number>(0);
   const [direction, setDirection] = useState<"long" | "short">("long");
 
-  // Persist risk settings (nice UX)
+  // Load persisted
   useEffect(() => {
+    try {
+      const wl = localStorage.getItem("rw_watchlist_v1");
+      if (wl) {
+        const parsed = JSON.parse(wl);
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed.map((x) => safeTicker(String(x))).filter((x) => isValidTicker(x));
+          if (cleaned.length) setWatchlist(Array.from(new Set(cleaned)));
+        }
+      }
+    } catch {}
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setHistory(parsed);
+      }
+    } catch {}
     try {
       const raw = localStorage.getItem("rw_risk_v1");
       if (raw) {
@@ -355,47 +358,21 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("rw_risk_v1", JSON.stringify({ acctSize, riskPct, entry, stop, direction }));
-    } catch {}
-  }, [acctSize, riskPct, entry, stop, direction]);
-
-  // Load watchlist
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem("rw_watchlist_v1");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length) {
-          const cleaned = parsed.map((x) => safeTicker(String(x))).filter((x) => isValidTicker(x));
-          if (cleaned.length) setWatchlist(Array.from(new Set(cleaned)));
-        }
-      }
-    } catch {}
-  }, []);
-
-  useEffect(() => {
-    try {
       localStorage.setItem("rw_watchlist_v1", JSON.stringify(watchlist));
     } catch {}
   }, [watchlist]);
-
-  // Load history
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(HISTORY_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setHistory(parsed);
-      }
-    } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   useEffect(() => {
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
     } catch {}
   }, [history]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("rw_risk_v1", JSON.stringify({ acctSize, riskPct, entry, stop, direction }));
+    } catch {}
+  }, [acctSize, riskPct, entry, stop, direction]);
 
   const inputObj = useMemo(() => {
     try {
@@ -405,28 +382,20 @@ export default function Home() {
     }
   }, [inputJsonText]);
 
-  const xPost = useMemo(() => {
-    if (!inputObj || !plan) return "";
-    return formatXPost(inputObj, plan);
-  }, [inputObj, plan]);
-
   const momentumScore = typeof inputObj?.momentum_score === "number" ? inputObj.momentum_score : undefined;
   const confLevel = normalizeConfidence(momentumScore);
   const confText = confidenceLabel(confLevel);
+  const biasGuess = biasGuessFromScore(typeof momentumScore === "number" ? momentumScore : null);
 
   const symbolHistory = useMemo(() => {
     const sym = safeTicker(symbol);
     return history.filter((h) => h.symbol === sym).slice(0, HISTORY_PER_SYMBOL_MAX);
   }, [history, symbol]);
 
-  function showToast(msg: string) {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 1800);
-  }
-
-  function nowMs() {
-    return Date.now();
-  }
+  const xPost = useMemo(() => {
+    if (!inputObj || !plan) return "";
+    return formatXPost(inputObj, plan);
+  }, [inputObj, plan]);
 
   function maybeTriggerBiasFlip(prevBias: SnapshotHistoryItem["bias_guess"] | null, nextItem: SnapshotHistoryItem) {
     if (!prevBias) return;
@@ -449,6 +418,7 @@ export default function Home() {
 
     setBiasFlip(flip);
     if (biasFlipSound) playBeep();
+    toast(`Bias flip: ${flip.symbol} ${flip.from.toUpperCase()} → ${flip.to.toUpperCase()}`);
   }
 
   function addSnapshotToHistory(snap: any) {
@@ -495,17 +465,19 @@ export default function Home() {
     inFlightRef.current = true;
 
     setError("");
-    setLoading(true);
-
     try {
       const sym = safeTicker(forSymbol || symbol);
+      if (!isValidTicker(sym)) {
+        toast.error("Invalid ticker");
+        return;
+      }
+
       const snapRes = await fetch(`/api/snapshot?symbol=${encodeURIComponent(sym)}`);
       const snap = await snapRes.json();
       if (!snapRes.ok) throw new Error(snap?.error || "Snapshot failed");
 
       const s = String(snap?.symbol || sym).toUpperCase();
       setSymbol(s);
-
       setUsingLastSession(!!snap.using_last_session_data);
       setMarketOpen(!!snap.market_open);
       setInputJsonText(JSON.stringify(snap, null, 2));
@@ -513,22 +485,21 @@ export default function Home() {
 
       addSnapshotToHistory(snap);
 
-      // helpful: keep risk entry near price if user hasn’t set it
       if (!entry && typeof snap?.price === "number") setEntry(snap.price);
+
+      toast(`${s} snapshot updated`);
     } catch (e: any) {
       setError(e?.message || "Unknown error");
+      toast.error(e?.message || "Snapshot error");
     } finally {
-      setLoading(false);
       inFlightRef.current = false;
     }
   }
 
-  async function generatePlanFromLatestSnapshot() {
-    const t = nowMs();
+  async function runAIWithSnapshot() {
     if (aiInFlightRef.current) return;
-    if (t < aiCooldownUntil) {
-      const secs = Math.ceil((aiCooldownUntil - t) / 1000);
-      showToast(`AI cooling down (${secs}s)`);
+    if (Date.now() < aiCooldownUntil) {
+      toast("AI cooling down… (quota / rate limit)");
       return;
     }
 
@@ -537,17 +508,15 @@ export default function Home() {
     let snap: any = null;
     try {
       snap = JSON.parse(inputJsonText);
-    } catch {
-      snap = null;
-    }
+    } catch {}
     if (!snap) {
-      setError("Snapshot JSON is invalid.");
+      setError("Snapshot JSON invalid.");
+      toast.error("Snapshot JSON invalid");
       return;
     }
 
     aiInFlightRef.current = true;
     setError("");
-    setLoading(true);
     setPlan(null);
 
     try {
@@ -556,70 +525,20 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ inputJson: snap })
       });
-
       const planData = await planRes.json();
       if (!planRes.ok) throw new Error(planData?.error || "Plan failed");
 
       const s = String(snap?.symbol || symbol).toUpperCase();
       setPlan(applySymbolToPlan(planData, s) as Plan);
-      showToast("AI plan generated.");
+      toast.success("AI plan generated");
     } catch (e: any) {
       const msg = e?.message || "AI error";
       if (String(msg).includes("429") || String(msg).toLowerCase().includes("quota")) {
         setAiCooldownUntil(Date.now() + 35_000);
-        showToast("AI quota hit — cooling down.");
       }
       setError(msg);
+      toast.error(msg);
     } finally {
-      setLoading(false);
-      aiInFlightRef.current = false;
-    }
-  }
-
-  async function generatePlan() {
-    const t = nowMs();
-    if (aiInFlightRef.current) return;
-    if (t < aiCooldownUntil) {
-      const secs = Math.ceil((aiCooldownUntil - t) / 1000);
-      showToast(`AI cooling down (${secs}s)`);
-      return;
-    }
-
-    setError("");
-    setPlan(null);
-
-    if (!inputObj) {
-      setError("Your snapshot JSON is not valid.");
-      return;
-    }
-
-    aiInFlightRef.current = true;
-    setLoading(true);
-
-    try {
-      const scoredInput = { ...inputObj, momentum_score: computeMomentumScore(inputObj) };
-
-      const res = await fetch("/api/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ inputJson: scoredInput })
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Request failed");
-
-      const s = String(scoredInput?.symbol || symbol).toUpperCase();
-      setPlan(applySymbolToPlan(data, s) as Plan);
-      showToast("AI plan generated.");
-    } catch (e: any) {
-      const msg = e?.message || "AI error";
-      if (String(msg).includes("429") || String(msg).toLowerCase().includes("quota")) {
-        setAiCooldownUntil(Date.now() + 35_000);
-        showToast("AI quota hit — cooling down.");
-      }
-      setError(msg);
-    } finally {
-      setLoading(false);
       aiInFlightRef.current = false;
     }
   }
@@ -627,26 +546,17 @@ export default function Home() {
   async function copyToClipboard(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      showToast("Copied to clipboard.");
+      toast.success("Copied");
     } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      showToast("Copied to clipboard.");
+      toast.error("Copy failed");
     }
   }
 
+  // Auto refresh loop
   useEffect(() => {
     if (!autoRefresh) return;
-
     const secs = Math.max(10, Math.min(600, Number(refreshSeconds) || 60));
-    const id = window.setInterval(() => {
-      refreshSnapshotOnly();
-    }, secs * 1000);
-
+    const id = window.setInterval(() => refreshSnapshotOnly(), secs * 1000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRefresh, refreshSeconds, symbol]);
@@ -654,18 +564,15 @@ export default function Home() {
   function addToWatchlist() {
     const t = safeTicker(newTicker);
     if (!t) return;
-    if (!isValidTicker(t)) {
-      showToast("Invalid ticker format");
-      return;
-    }
+    if (!isValidTicker(t)) return toast.error("Invalid ticker");
     setWatchlist((prev) => Array.from(new Set([t, ...prev])));
     setNewTicker("");
-    showToast(`${t} added`);
+    toast.success(`${t} added`);
   }
 
   function removeFromWatchlist(ticker: string) {
     setWatchlist((prev) => prev.filter((x) => x !== ticker));
-    showToast(`${ticker} removed`);
+    toast(`${ticker} removed`);
   }
 
   async function selectFromWatchlist(ticker: string) {
@@ -673,16 +580,13 @@ export default function Home() {
     setSymbol(t);
     setPlan(null);
     await refreshSnapshotOnly(t);
-    showToast(`${t} loaded`);
-    if (autoAiOnWatchClick) {
-      await generatePlanFromLatestSnapshot();
-    }
+    if (autoAiOnWatchClick) await runAIWithSnapshot();
   }
 
   function clearHistoryForSymbol(sym: string) {
     const s = safeTicker(sym);
     setHistory((prev) => prev.filter((h) => h.symbol !== s));
-    showToast(`Cleared history: ${s}`);
+    toast(`Cleared history: ${s}`);
   }
 
   function loadHistoryItem(item: SnapshotHistoryItem) {
@@ -690,30 +594,23 @@ export default function Home() {
     setSymbol(item.symbol);
     setInputJsonText(JSON.stringify(item.snapshot, null, 2));
     setLastUpdated(fmtTime(item.ts));
-    showToast(`Loaded ${item.symbol} @ ${fmtTime(item.ts)}`);
-
-    // smart fill risk entry
     if (typeof item.price === "number") setEntry(item.price);
+    toast(`Loaded ${item.symbol} @ ${fmtTime(item.ts)}`);
   }
 
-  // ✅ Risk calculations
-  const riskDollars = useMemo(() => {
-    if (!acctSize || !riskPct) return null;
-    return (acctSize * (riskPct / 100));
-  }, [acctSize, riskPct]);
+  // Risk calculations
+  const riskDollars = useMemo(() => (acctSize && riskPct ? acctSize * (riskPct / 100) : null), [acctSize, riskPct]);
 
   const stopDistance = useMemo(() => {
     if (!entry || !stop) return null;
     const dist = Math.abs(entry - stop);
-    if (!isFinite(dist) || dist <= 0) return null;
-    return dist;
+    return dist > 0 ? dist : null;
   }, [entry, stop]);
 
   const shares = useMemo(() => {
     if (!riskDollars || !stopDistance) return null;
     const raw = riskDollars / stopDistance;
-    if (!isFinite(raw) || raw <= 0) return null;
-    return Math.floor(raw);
+    return raw > 0 ? Math.floor(raw) : null;
   }, [riskDollars, stopDistance]);
 
   const positionValue = useMemo(() => {
@@ -723,667 +620,546 @@ export default function Home() {
 
   const rTargets = useMemo(() => {
     if (!stopDistance || !entry) return null;
-    const dist = stopDistance;
-
-    const mk = (r: number) => {
-      if (direction === "long") return entry + dist * r;
-      return entry - dist * r;
-    };
-
-    return {
-      r1: mk(1),
-      r2: mk(2),
-      r3: mk(3)
-    };
+    const d = stopDistance;
+    const mk = (r: number) => (direction === "long" ? entry + d * r : entry - d * r);
+    return { r1: mk(1), r2: mk(2), r3: mk(3) };
   }, [stopDistance, entry, direction]);
 
-  const styles = {
-    page: {
-      minHeight: "100vh",
-      background: "linear-gradient(180deg, #0b1220 0%, #0b1220 35%, #0f172a 100%)",
-      color: "#e5e7eb"
-    } as React.CSSProperties,
-    shell: { maxWidth: 1200, margin: "0 auto", padding: "22px 16px 40px" } as React.CSSProperties,
-    headerRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap" } as React.CSSProperties,
-    title: { fontSize: 28, margin: 0, letterSpacing: "-0.02em" } as React.CSSProperties,
-    subtitle: { margin: "8px 0 0", opacity: 0.85, maxWidth: 820, lineHeight: 1.35 } as React.CSSProperties,
-    mainGrid: { display: "grid", gridTemplateColumns: "320px 1fr", gap: 16, marginTop: 16, alignItems: "start" } as React.CSSProperties,
-    cardGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" } as React.CSSProperties,
-    card: {
-      background: "rgba(255,255,255,0.06)",
-      border: "1px solid rgba(255,255,255,0.10)",
-      borderRadius: 16,
-      padding: 16,
-      boxShadow: "0 10px 30px rgba(0,0,0,0.25)"
-    } as React.CSSProperties,
-    cardTitle: { fontSize: 15, margin: "0 0 10px", opacity: 0.9, letterSpacing: "0.02em" } as React.CSSProperties,
-    label: { fontSize: 12, opacity: 0.75 } as React.CSSProperties,
-    input: {
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: "1px solid rgba(255,255,255,0.14)",
-      background: "rgba(0,0,0,0.25)",
-      color: "#e5e7eb",
-      outline: "none"
-    } as React.CSSProperties,
-    textarea: {
-      width: "100%",
-      padding: 12,
-      borderRadius: 14,
-      border: "1px solid rgba(255,255,255,0.14)",
-      background: "rgba(0,0,0,0.25)",
-      color: "#e5e7eb",
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: 12,
-      lineHeight: 1.4,
-      outline: "none"
-    } as React.CSSProperties,
-    btnRow: { display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" } as React.CSSProperties,
-    btn: {
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: "1px solid rgba(255,255,255,0.14)",
-      background: "rgba(255,255,255,0.08)",
-      color: "#e5e7eb",
-      cursor: "pointer"
-    } as React.CSSProperties,
-    btnPrimary: {
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: "1px solid rgba(56,189,248,0.45)",
-      background: "rgba(56,189,248,0.18)",
-      color: "#e5e7eb",
-      cursor: "pointer"
-    } as React.CSSProperties,
-    btnDanger: {
-      padding: "10px 12px",
-      borderRadius: 12,
-      border: "1px solid rgba(248,113,113,0.35)",
-      background: "rgba(248,113,113,0.12)",
-      color: "#e5e7eb",
-      cursor: "pointer"
-    } as React.CSSProperties,
-    pillRow: { display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 } as React.CSSProperties,
-    pill: {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "7px 10px",
-      borderRadius: 999,
-      border: "1px solid rgba(255,255,255,0.14)",
-      background: "rgba(0,0,0,0.20)",
-      fontSize: 12
-    } as React.CSSProperties,
-    banner: {
-      marginTop: 12,
-      padding: "10px 12px",
-      borderRadius: 14,
-      border: "1px solid rgba(251,191,36,0.35)",
-      background: "rgba(251,191,36,0.14)",
-      color: "#fde68a",
-      fontSize: 13
-    } as React.CSSProperties,
-    monoSmall: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, opacity: 0.85 } as React.CSSProperties
+  const biasBadgeVariant = (b: string) => {
+    const s = b.toLowerCase();
+    if (s === "bullish") return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+    if (s === "bearish") return "bg-rose-500/15 text-rose-300 border-rose-500/30";
+    return "bg-slate-500/15 text-slate-200 border-slate-500/30";
   };
 
-  const biasTone = pillToneFromBias(plan?.bias);
-
   return (
-    <div style={styles.page}>
-      <main style={styles.shell}>
-        {/* Bias Flip Banner */}
-        {biasFlip && (
-          <div
-            style={{
-              marginBottom: 12,
-              padding: "12px 14px",
-              borderRadius: 16,
-              border: "1px solid rgba(56,189,248,0.35)",
-              background: "rgba(56,189,248,0.12)",
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 12,
-              flexWrap: "wrap"
-            }}
-          >
-            <div style={{ lineHeight: 1.35 }}>
-              <div style={{ fontWeight: 800 }}>
-                ⚡ Bias Flip: {biasFlip.symbol} — {formatBias(biasFlip.from)} → {formatBias(biasFlip.to)}
-              </div>
-              <div style={{ opacity: 0.8, fontSize: 12 }}>
-                {fmtTime(biasFlip.ts)} • Price {typeof biasFlip.price === "number" ? biasFlip.price.toFixed(2) : "—"} • Score{" "}
-                {typeof biasFlip.score === "number" ? biasFlip.score.toFixed(1) : "—"}
-              </div>
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 to-slate-900 text-slate-100">
+      {/* TopBar */}
+      <div className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/80 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-500/20 text-cyan-300 border border-cyan-400/20">
+              RP
             </div>
-
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <button onClick={() => copyToClipboard(formatXAlert(biasFlip))} style={styles.btnPrimary}>
-                Copy Alert for X
-              </button>
-              <button onClick={() => setBiasFlip(null)} style={styles.btn}>
-                Dismiss
-              </button>
+            <div>
+              <div className="text-sm font-semibold leading-tight">Retail Weapon Pack</div>
+              <div className="text-xs text-slate-400">Bias • Alerts • Risk • Posting</div>
             </div>
           </div>
-        )}
 
-        <div style={styles.headerRow}>
-          <div>
-            <h1 style={styles.title}>Intraday Bias Engine</h1>
-            <p style={styles.subtitle}>
-              Step 5 ✅ Risk calculator. Fast position sizing from account risk + stop distance.
-            </p>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="border-white/10 bg-white/5">
+              {symbol}
+            </Badge>
+            <Badge variant="outline" className="border-white/10 bg-white/5">
+              {marketOpen ? "Market: OPEN" : "Market: CLOSED"}
+            </Badge>
+            <Badge variant="outline" className="border-white/10 bg-white/5">
+              {usingLastSession ? "Data: LAST SESSION" : "Data: LIVE"}
+            </Badge>
 
-            <div style={styles.pillRow}>
-              <span style={styles.pill}>
-                Market: <b>{marketOpen ? "OPEN" : "CLOSED"}</b>
-              </span>
-              <span style={styles.pill}>
-                Data: <b>{usingLastSession ? "LAST SESSION" : "LIVE"}</b>
-              </span>
-              {typeof momentumScore === "number" && (
-                <span style={styles.pill}>
-                  Momentum: <b>{momentumScore.toFixed(1)}</b>/10
-                </span>
-              )}
-              {inputObj && (
-                <span style={styles.pill}>
-                  Confidence: <b>{confText}</b>
-                  <span style={styles.monoSmall}>
-                    {"█".repeat(confLevel)}{"░".repeat(5 - confLevel)} ({confLevel}/5)
-                  </span>
-                </span>
-              )}
-              <span style={styles.pill}>
-                Updated: <b>{lastUpdated ?? "—"}</b>
-              </span>
-              <span style={styles.pill}>
-                Symbol: <b>{symbol}</b>
-              </span>
-            </div>
+            <Button variant="secondary" onClick={() => refreshSnapshotOnly()} className="bg-white/5 border border-white/10">
+              Fetch
+            </Button>
+            <Button onClick={runAIWithSnapshot} className="bg-cyan-500/20 border border-cyan-400/30 text-cyan-100 hover:bg-cyan-500/25">
+              Run AI
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                if (plan && inputObj) copyToClipboard(formatXPost(inputObj, plan));
+                else toast("No plan to copy yet");
+              }}
+              className="bg-white/5 border border-white/10"
+            >
+              Copy X
+            </Button>
 
-            {usingLastSession && <div style={styles.banner}>Using last available session data (market likely closed).</div>}
-          </div>
+            {/* Settings */}
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button variant="secondary" className="bg-white/5 border border-white/10">
+                  Settings
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="border-white/10 bg-slate-950 text-slate-100">
+                <DialogHeader>
+                  <DialogTitle>Settings</DialogTitle>
+                </DialogHeader>
 
-          <div style={{ opacity: 0.85, fontSize: 12, textAlign: "right" }}>
-            <div style={{ fontWeight: 700 }}>Retail Weapon Pack</div>
-            <div style={{ opacity: 0.75 }}>by @bptrades</div>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium">Auto refresh</div>
+                      <div className="text-xs text-slate-400">Auto fetch snapshot on a timer.</div>
+                    </div>
+                    <Switch checked={autoRefresh} onCheckedChange={(v) => setAutoRefresh(v)} />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-xs text-slate-400 mb-1">Refresh interval (sec)</div>
+                      <Input
+                        type="number"
+                        value={refreshSeconds}
+                        onChange={(e) => setRefreshSeconds(Number(e.target.value))}
+                        className="bg-white/5 border-white/10"
+                        min={10}
+                        max={600}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-400 mb-1">Flip alert sound</div>
+                      <div className="flex items-center gap-2">
+                        <Switch checked={biasFlipSound} onCheckedChange={(v) => setBiasFlipSound(v)} />
+                        <span className="text-sm">{biasFlipSound ? "On" : "Off"}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium">Auto AI on watchlist click</div>
+                      <div className="text-xs text-slate-400">Consumes Gemini quota.</div>
+                    </div>
+                    <Switch checked={autoAiOnWatchClick} onCheckedChange={(v) => setAutoAiOnWatchClick(v)} />
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium">Show Advanced JSON</div>
+                      <div className="text-xs text-slate-400">Developer view for debugging.</div>
+                    </div>
+                    <Switch checked={showAdvanced} onCheckedChange={(v) => setShowAdvanced(v)} />
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
           </div>
         </div>
+      </div>
 
-        <div style={styles.mainGrid}>
-          {/* LEFT SIDEBAR */}
-          <aside style={styles.card}>
-            <h2 style={styles.cardTitle}>Watchlist</h2>
-
-            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <input
-                value={newTicker}
-                onChange={(e) => setNewTicker(e.target.value)}
-                placeholder="Add ticker (e.g. META)"
-                style={{ ...styles.input, flex: 1 }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") addToWatchlist();
-                }}
+      <div className="mx-auto grid max-w-7xl grid-cols-12 gap-4 px-4 py-6">
+        {/* Sidebar */}
+        <div className="col-span-12 lg:col-span-3 space-y-4">
+          <Card className="border-white/10 bg-white/5">
+            <CardHeader>
+              <CardTitle className="text-sm">Symbol</CardTitle>
+              <CardDescription>Search any ticker supported by your data feed.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Input
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value.toUpperCase().trim())}
+                className="bg-white/5 border-white/10"
+                placeholder="SPY"
               />
-              <button onClick={addToWatchlist} style={styles.btnPrimary} disabled={loading}>
-                Add
-              </button>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-              <span style={styles.label}>Auto AI on click</span>
-              <button
-                onClick={() => {
-                  setAutoAiOnWatchClick((v) => !v);
-                  showToast(!autoAiOnWatchClick ? "Auto AI on click ON" : "Auto AI on click OFF");
-                }}
-                style={autoAiOnWatchClick ? styles.btnPrimary : styles.btn}
-                disabled={loading}
-              >
-                {autoAiOnWatchClick ? "ON" : "OFF"}
-              </button>
-              <span style={{ ...styles.label, opacity: 0.65 }}>(uses Gemini quota)</span>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-              <span style={styles.label}>Flip sound</span>
-              <button
-                onClick={() => {
-                  setBiasFlipSound((v) => !v);
-                  showToast(!biasFlipSound ? "Flip sound ON" : "Flip sound OFF");
-                }}
-                style={biasFlipSound ? styles.btnPrimary : styles.btn}
-              >
-                {biasFlipSound ? "ON" : "OFF"}
-              </button>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {watchlist.map((t) => {
-                const active = t === symbol;
-                return (
-                  <div
-                    key={t}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      padding: "10px 10px",
-                      borderRadius: 12,
-                      border: active ? "1px solid rgba(56,189,248,0.60)" : "1px solid rgba(255,255,255,0.10)",
-                      background: active ? "rgba(56,189,248,0.12)" : "rgba(0,0,0,0.20)",
-                      cursor: "pointer"
-                    }}
-                  >
-                    <div onClick={() => selectFromWatchlist(t)} style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
-                      <b>{t}</b>
-                      {active && <span style={{ fontSize: 11, opacity: 0.75 }}>ACTIVE</span>}
-                    </div>
-
-                    <button
-                      onClick={() => removeFromWatchlist(t)}
-                      style={{
-                        padding: "6px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        background: "rgba(0,0,0,0.25)",
-                        color: "#e5e7eb",
-                        cursor: "pointer"
-                      }}
-                      title="Remove"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* SNAPSHOT HISTORY */}
-            <div style={{ marginTop: 16, borderTop: "1px solid rgba(255,255,255,0.10)", paddingTop: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                <h2 style={{ ...styles.cardTitle, margin: 0 }}>Snapshot History</h2>
-                <button onClick={() => clearHistoryForSymbol(symbol)} style={{ ...styles.btn, padding: "8px 10px" }} disabled={loading}>
-                  Clear
-                </button>
+              <div className="flex gap-2">
+                <Button variant="secondary" className="w-full bg-white/5 border border-white/10" onClick={() => refreshSnapshotOnly()}>
+                  Fetch Snapshot
+                </Button>
               </div>
 
-              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                {symbolHistory.length === 0 && <div style={{ opacity: 0.7, fontSize: 12 }}>No history yet. Fetch a snapshot.</div>}
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                <span>Updated:</span>
+                <span className="text-slate-200">{lastUpdated ?? "—"}</span>
+              </div>
 
-                {symbolHistory.map((h) => {
-                  const tone = pillToneFromBias(h.bias_guess);
-                  return (
-                    <div
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400">Bias guess</span>
+                <Badge variant="outline" className={`border ${biasBadgeVariant(biasGuess)}`}>
+                  {biasGuess.toUpperCase()}
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/10 bg-white/5">
+            <CardHeader>
+              <CardTitle className="text-sm">Watchlist</CardTitle>
+              <CardDescription>Click to load. Optional auto-AI in Settings.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex gap-2">
+                <Input
+                  value={newTicker}
+                  onChange={(e) => setNewTicker(e.target.value)}
+                  className="bg-white/5 border-white/10"
+                  placeholder="Add ticker (META)"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") addToWatchlist();
+                  }}
+                />
+                <Button onClick={addToWatchlist} className="bg-cyan-500/20 border border-cyan-400/30 text-cyan-100 hover:bg-cyan-500/25">
+                  Add
+                </Button>
+              </div>
+
+              <div className="space-y-2">
+                {watchlist.map((t) => (
+                  <div key={t} className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+                    <button onClick={() => selectFromWatchlist(t)} className="text-left text-sm font-semibold hover:opacity-90">
+                      {t}
+                    </button>
+                    <Button size="sm" variant="secondary" className="bg-white/5 border border-white/10" onClick={() => removeFromWatchlist(t)}>
+                      ✕
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/10 bg-white/5">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle className="text-sm">Snapshot History</CardTitle>
+                <CardDescription>Click an item to reload snapshot.</CardDescription>
+              </div>
+              <Button size="sm" variant="secondary" className="bg-white/5 border border-white/10" onClick={() => clearHistoryForSymbol(symbol)}>
+                Clear
+              </Button>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="h-[360px] pr-2">
+                <div className="space-y-2">
+                  {symbolHistory.length === 0 && <div className="text-sm text-slate-400">No history yet. Fetch a snapshot.</div>}
+                  {symbolHistory.map((h) => (
+                    <button
                       key={h.id}
                       onClick={() => loadHistoryItem(h)}
-                      style={{
-                        cursor: "pointer",
-                        padding: "10px 10px",
-                        borderRadius: 12,
-                        border: "1px solid rgba(255,255,255,0.10)",
-                        background: "rgba(0,0,0,0.20)"
-                      }}
-                      title="Click to load this snapshot"
+                      className="w-full rounded-xl border border-white/10 bg-black/20 p-3 text-left hover:bg-black/30"
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                        <div style={{ fontWeight: 700 }}>
-                          {h.symbol} <span style={{ opacity: 0.65, fontWeight: 400 }}>{fmtTime(h.ts)}</span>
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-semibold">
+                          {h.symbol} <span className="ml-2 text-xs text-slate-400">{fmtTime(h.ts)}</span>
                         </div>
-                        <span
-                          style={{
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            border: `1px solid ${tone.border}`,
-                            background: tone.bg,
-                            color: tone.text,
-                            fontSize: 11
-                          }}
-                        >
+                        <Badge variant="outline" className={`border ${biasBadgeVariant(h.bias_guess)}`}>
                           {h.bias_guess.toUpperCase()}
-                        </span>
+                        </Badge>
                       </div>
-
-                      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        <span>
-                          Price: <b>{h.price ?? "—"}</b>
-                        </span>
-                        <span>
-                          VWAP: <b>{h.vwap ?? "—"}</b>
-                        </span>
-                        <span>
-                          Score: <b>{typeof h.momentum_score === "number" ? h.momentum_score.toFixed(1) : "—"}</b>
-                        </span>
+                      <div className="mt-2 text-xs text-slate-300 flex flex-wrap gap-3">
+                        <span>Px: <b>{h.price ?? "—"}</b></span>
+                        <span>VWAP: <b>{h.vwap ?? "—"}</b></span>
+                        <span>Score: <b>{typeof h.momentum_score === "number" ? h.momentum_score.toFixed(1) : "—"}</b></span>
                       </div>
-
-                      <div style={{ marginTop: 4, fontSize: 11, opacity: 0.65 }}>
-                        VWAP {h.vwap_state ?? "—"} • 5m {h.ema_trend_5m ?? "—"} • 15m {h.ema_trend_15m ?? "—"}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* ✅ RISK CALCULATOR */}
-            <div style={{ marginTop: 16, borderTop: "1px solid rgba(255,255,255,0.10)", paddingTop: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                <h2 style={{ ...styles.cardTitle, margin: 0 }}>Risk Calculator</h2>
-                <button
-                  onClick={() => {
-                    const p = Number(inputObj?.price);
-                    if (isFinite(p) && p > 0) {
-                      setEntry(p);
-                      showToast("Entry set to current price");
-                    } else {
-                      showToast("No current price yet — fetch snapshot");
-                    }
-                  }}
-                  style={{ ...styles.btn, padding: "8px 10px" }}
-                >
-                  Use Current Price
-                </button>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
-                <div>
-                  <div style={styles.label}>Account Size ($)</div>
-                  <input
-                    type="number"
-                    value={acctSize}
-                    onChange={(e) => setAcctSize(Number(e.target.value))}
-                    style={{ ...styles.input, width: "100%" }}
-                  />
-                </div>
-                <div>
-                  <div style={styles.label}>Risk %</div>
-                  <input
-                    type="number"
-                    value={riskPct}
-                    onChange={(e) => setRiskPct(Number(e.target.value))}
-                    style={{ ...styles.input, width: "100%" }}
-                    step={0.25}
-                  />
-                </div>
-
-                <div>
-                  <div style={styles.label}>Direction</div>
-                  <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                    <button onClick={() => setDirection("long")} style={direction === "long" ? styles.btnPrimary : styles.btn}>
-                      Long
                     </button>
-                    <button onClick={() => setDirection("short")} style={direction === "short" ? styles.btnPrimary : styles.btn}>
-                      Short
-                    </button>
-                  </div>
+                  ))}
                 </div>
-
-                <div>
-                  <div style={styles.label}>Risk ($)</div>
-                  <div
-                    style={{
-                      marginTop: 6,
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      border: "1px solid rgba(255,255,255,0.14)",
-                      background: "rgba(0,0,0,0.25)",
-                      fontWeight: 800
-                    }}
-                  >
-                    {fmtMoney(riskDollars)}
-                  </div>
-                </div>
-
-                <div>
-                  <div style={styles.label}>Entry</div>
-                  <input type="number" value={entry} onChange={(e) => setEntry(Number(e.target.value))} style={{ ...styles.input, width: "100%" }} />
-                </div>
-                <div>
-                  <div style={styles.label}>Stop</div>
-                  <input type="number" value={stop} onChange={(e) => setStop(Number(e.target.value))} style={{ ...styles.input, width: "100%" }} />
-                </div>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
-                <Stat label="Stop Distance" value={stopDistance ? fmtNum(stopDistance, 2) : "—"} />
-                <Stat label="Shares Size" value={shares ?? "—"} />
-                <Stat label="Position $" value={positionValue ? fmtMoney(positionValue) : "—"} />
-                <Stat label="1R / 2R / 3R Targets" value={rTargets ? `${fmtNum(rTargets.r1, 2)} • ${fmtNum(rTargets.r2, 2)} • ${fmtNum(rTargets.r3, 2)}` : "—"} />
-              </div>
-
-              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.65, lineHeight: 1.35 }}>
-                Size is based on <b>shares</b>: Shares = Risk$ ÷ |Entry − Stop|. Options sizing is coming later (premium-based).
-              </div>
-            </div>
-          </aside>
-
-          {/* MAIN CONTENT */}
-          <div style={styles.cardGrid}>
-            {/* DASHBOARD */}
-            <section style={styles.card}>
-              <h2 style={styles.cardTitle}>Dashboard</h2>
-
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-                <span style={styles.label}>Symbol</span>
-                <input
-                  value={symbol}
-                  onChange={(e) => setSymbol(e.target.value.toUpperCase().trim())}
-                  placeholder="SPY"
-                  style={{ ...styles.input, width: 120 }}
-                />
-
-                <span style={{ ...styles.label, marginLeft: 6 }}>Auto refresh</span>
-                <button
-                  onClick={() => {
-                    setAutoRefresh((v) => !v);
-                    showToast(!autoRefresh ? "Auto refresh ON" : "Auto refresh OFF");
-                  }}
-                  style={autoRefresh ? styles.btnPrimary : styles.btn}
-                  disabled={loading}
-                >
-                  {autoRefresh ? "ON" : "OFF"}
-                </button>
-
-                <span style={styles.label}>Every</span>
-                <input
-                  type="number"
-                  value={refreshSeconds}
-                  onChange={(e) => setRefreshSeconds(Number(e.target.value))}
-                  min={10}
-                  max={600}
-                  style={{ ...styles.input, width: 90 }}
-                />
-                <span style={styles.label}>sec</span>
-              </div>
-
-              <TradingViewChart symbol={symbol} />
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
-                <Stat label="Price" value={inputObj?.price} />
-                <Stat label="VWAP" value={inputObj?.vwap} />
-                <Stat label="VWAP State" value={inputObj?.vwap_state} />
-                <Stat label="EMA Trend 5m" value={inputObj?.ema_trend_5m} />
-                <Stat label="EMA Trend 15m" value={inputObj?.ema_trend_15m} />
-                <Stat label="RSI (1m)" value={inputObj?.rsi_1m} />
-                <Stat label="Volume" value={inputObj?.volume_state} />
-                <Stat label="Momentum Score" value={inputObj?.momentum_score} />
-              </div>
-
-              <div style={styles.btnRow}>
-                <button onClick={() => refreshSnapshotOnly()} disabled={loading} style={styles.btn}>
-                  Fetch Snapshot
-                </button>
-
-                <button onClick={generatePlanFromLatestSnapshot} disabled={loading} style={styles.btnPrimary}>
-                  {loading ? "Working..." : "Run Weapon Pack (AI)"}
-                </button>
-
-                <button onClick={generatePlan} disabled={loading} style={styles.btn}>
-                  Generate Plan (from JSON)
-                </button>
-
-                <button
-                  onClick={() => {
-                    setAutoRefresh(false);
-                    setUsingLastSession(false);
-                    setMarketOpen(false);
-                    setPlan(null);
-                    setError("");
-                    setLastUpdated(null);
-                    setInputJsonText(JSON.stringify({ ...defaultInput, symbol }, null, 2));
-                    showToast("Reset.");
-                  }}
-                  disabled={loading}
-                  style={styles.btnDanger}
-                >
-                  Reset
-                </button>
-              </div>
-
-              {error && (
-                <div
-                  style={{
-                    marginTop: 12,
-                    padding: 10,
-                    borderRadius: 14,
-                    background: "rgba(248,113,113,0.12)",
-                    border: "1px solid rgba(248,113,113,0.25)"
-                  }}
-                >
-                  <b style={{ color: "#fecaca" }}>Error:</b> <span style={{ color: "#fecaca" }}>{error}</span>
-                </div>
-              )}
-
-              <details style={{ marginTop: 14 }}>
-                <summary style={{ cursor: "pointer", opacity: 0.85 }}>Advanced: show snapshot JSON</summary>
-                <textarea
-                  value={inputJsonText}
-                  onChange={(e) => setInputJsonText(e.target.value)}
-                  rows={14}
-                  style={{ ...styles.textarea, marginTop: 10 }}
-                />
-              </details>
-            </section>
-
-            {/* AI OUTPUT */}
-            <section style={styles.card}>
-              <h2 style={styles.cardTitle}>AI Plan Output</h2>
-
-              {!plan && !loading && (
-                <div style={{ opacity: 0.75, lineHeight: 1.4 }}>
-                  Click <b>Run Weapon Pack (AI)</b> to generate the plan.
-                </div>
-              )}
-
-              {plan && (
-                <>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-                    <span
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 8,
-                        padding: "7px 10px",
-                        borderRadius: 999,
-                        border: `1px solid ${biasTone.border}`,
-                        background: biasTone.bg,
-                        color: biasTone.text,
-                        fontSize: 12
-                      }}
-                    >
-                      Bias: <b>{plan.bias}</b>
-                    </span>
-                    <span style={styles.pill}>
-                      Symbol: <b>{String(inputObj?.symbol || symbol).toUpperCase()}</b>
-                    </span>
-                  </div>
-
-                  <div style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>THESIS</div>
-                    <div style={{ lineHeight: 1.45 }}>{plan.thesis}</div>
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>PLAYBOOK</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      {plan.playbook?.map((p, idx) => (
-                        <div
-                          key={idx}
-                          style={{
-                            borderRadius: 14,
-                            border: "1px solid rgba(255,255,255,0.12)",
-                            background: "rgba(0,0,0,0.22)",
-                            padding: 12
-                          }}
-                        >
-                          <div style={{ marginBottom: 6 }}>
-                            <b>IF</b> {p.if}
-                          </div>
-                          <div style={{ marginBottom: 6 }}>
-                            <b>THEN</b> {p.then}
-                          </div>
-                          <div style={{ opacity: 0.85 }}>
-                            <b>RISK</b> {p.risk}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>DANGER ZONES</div>
-                    <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.5 }}>
-                      {plan.danger_zones?.map((d, idx) => (
-                        <li key={idx}>{d}</li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div style={{ marginTop: 14, borderTop: "1px solid rgba(255,255,255,0.12)", paddingTop: 14 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <div>
-                        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>COPY-TO-X POST</div>
-                        <div style={{ fontSize: 12, opacity: 0.65 }}>Optimized for a single post — edit before posting.</div>
-                      </div>
-                      <button onClick={() => copyToClipboard(xPost)} disabled={!xPost} style={styles.btnPrimary}>
-                        Copy X Post
-                      </button>
-                    </div>
-
-                    <textarea value={xPost} readOnly rows={10} style={{ ...styles.textarea, marginTop: 10 }} />
-
-                    <div style={{ marginTop: 12, fontSize: 12, opacity: 0.55 }}>
-                      Not financial advice • Data may be delayed depending on feed • Built by @bptrades
-                    </div>
-                  </div>
-                </>
-              )}
-            </section>
-          </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
         </div>
 
-        {toast && (
-          <div
-            style={{
-              position: "fixed",
-              bottom: 20,
-              left: "50%",
-              transform: "translateX(-50%)",
-              padding: "10px 12px",
-              borderRadius: 14,
-              border: "1px solid rgba(255,255,255,0.14)",
-              background: "rgba(0,0,0,0.65)",
-              color: "#e5e7eb",
-              fontSize: 13,
-              boxShadow: "0 10px 30px rgba(0,0,0,0.35)"
-            }}
-          >
-            {toast}
-          </div>
-        )}
-      </main>
+        {/* Main */}
+        <div className="col-span-12 lg:col-span-6 space-y-4">
+          <Card className="border-white/10 bg-white/5">
+            <CardHeader>
+              <CardTitle className="text-sm">Chart</CardTitle>
+              <CardDescription>TradingView embed. Ticker maps common ETFs/indices.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <TradingViewChart symbol={symbol} />
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/10 bg-white/5">
+            <CardHeader>
+              <CardTitle className="text-sm">Snapshot</CardTitle>
+              <CardDescription>Clean tiles — no JSON needed for normal use.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-3">
+              <Metric label="Price" value={inputObj?.price} />
+              <Metric label="VWAP" value={inputObj?.vwap} />
+              <Metric label="VWAP State" value={inputObj?.vwap_state} />
+              <Metric label="EMA Trend (5m)" value={inputObj?.ema_trend_5m} />
+              <Metric label="EMA Trend (15m)" value={inputObj?.ema_trend_15m} />
+              <Metric label="RSI (1m)" value={inputObj?.rsi_1m} />
+              <Metric label="Volume" value={inputObj?.volume_state} />
+              <Metric label="Momentum Score" value={inputObj?.momentum_score} />
+              <Metric label="Confidence" value={`${confText} (${confLevel}/5)`} />
+              <Metric label="Session High" value={inputObj?.key_levels?.session_high} />
+              <Metric label="Session Low" value={inputObj?.key_levels?.session_low} />
+              <Metric label="60m High" value={inputObj?.key_levels?.high_60m} />
+              <Metric label="60m Low" value={inputObj?.key_levels?.low_60m} />
+              <Metric label="Data Source" value={usingLastSession ? "Last Session" : "Live"} />
+              <Metric label="Market" value={marketOpen ? "Open" : "Closed"} />
+            </CardContent>
+          </Card>
+
+          {error && (
+            <Card className="border-rose-500/30 bg-rose-500/10">
+              <CardContent className="p-4 text-rose-200">
+                <div className="text-sm font-semibold">Error</div>
+                <div className="text-sm opacity-90">{error}</div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+
+        {/* Right panel */}
+        <div className="col-span-12 lg:col-span-3 space-y-4">
+          <Card className="border-white/10 bg-white/5">
+            <CardHeader>
+              <CardTitle className="text-sm">Control Panel</CardTitle>
+              <CardDescription>Run the pack → copy post → monitor alerts.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex gap-2">
+                <Button variant="secondary" className="w-full bg-white/5 border border-white/10" onClick={() => refreshSnapshotOnly()}>
+                  Fetch
+                </Button>
+                <Button className="w-full bg-cyan-500/20 border border-cyan-400/30 text-cyan-100 hover:bg-cyan-500/25" onClick={runAIWithSnapshot}>
+                  Run AI
+                </Button>
+              </div>
+
+              <Separator className="bg-white/10" />
+
+              <Tabs defaultValue="plan" className="w-full">
+                <TabsList className="grid w-full grid-cols-4 bg-white/5 border border-white/10">
+                  <TabsTrigger value="plan">Plan</TabsTrigger>
+                  <TabsTrigger value="alerts">Alerts</TabsTrigger>
+                  <TabsTrigger value="risk">Risk</TabsTrigger>
+                  <TabsTrigger value="adv">Adv</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="plan" className="mt-4 space-y-3">
+                  {!plan ? (
+                    <div className="text-sm text-slate-400">
+                      No plan yet. Click <b>Run AI</b>.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <Badge variant="outline" className={`border ${biasBadgeVariant(plan.bias)}`}>
+                          {plan.bias.toUpperCase()}
+                        </Badge>
+                        <Button variant="secondary" className="bg-white/5 border border-white/10" onClick={() => copyToClipboard(xPost)} disabled={!xPost}>
+                          Copy X Post
+                        </Button>
+                      </div>
+
+                      <Card className="border-white/10 bg-black/20">
+                        <CardContent className="p-4">
+                          <div className="text-xs text-slate-400">THESIS</div>
+                          <div className="mt-2 text-sm leading-relaxed">{plan.thesis}</div>
+                        </CardContent>
+                      </Card>
+
+                      <div className="space-y-2">
+                        <div className="text-xs text-slate-400">PLAYBOOK</div>
+                        {plan.playbook?.map((p, idx) => (
+                          <Card key={idx} className="border-white/10 bg-black/20">
+                            <CardContent className="p-4 space-y-2">
+                              <div className="text-sm"><b>IF</b> {p.if}</div>
+                              <div className="text-sm"><b>THEN</b> {p.then}</div>
+                              <div className="text-sm text-slate-300"><b>RISK</b> {p.risk}</div>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+
+                      <Card className="border-white/10 bg-black/20">
+                        <CardContent className="p-4">
+                          <div className="text-xs text-slate-400">DANGER ZONES</div>
+                          <ul className="mt-2 list-disc pl-5 text-sm text-slate-200 space-y-1">
+                            {plan.danger_zones?.map((d, idx) => (
+                              <li key={idx}>{d}</li>
+                            ))}
+                          </ul>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="border-white/10 bg-black/20">
+                        <CardContent className="p-4">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="text-xs text-slate-400">X POST</div>
+                              <div className="text-xs text-slate-500">Edit before posting.</div>
+                            </div>
+                            <div className="text-xs text-slate-400">{xPost.length} chars</div>
+                          </div>
+                          <Textarea value={xPost} readOnly className="mt-3 bg-white/5 border-white/10 min-h-[180px]" />
+                        </CardContent>
+                      </Card>
+                    </>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="alerts" className="mt-4 space-y-3">
+                  <div className="text-sm text-slate-300">
+                    Bias flips trigger when bias_guess changes (bull/neutral/bear) on new snapshots.
+                  </div>
+
+                  {!biasFlip ? (
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-slate-400">
+                      No flip yet. Keep fetching or turn on Auto refresh.
+                    </div>
+                  ) : (
+                    <Card className="border-white/10 bg-black/20">
+                      <CardContent className="p-4 space-y-2">
+                        <div className="text-sm font-semibold">⚡ Bias Flip</div>
+                        <div className="text-sm">
+                          <b>{biasFlip.symbol}</b> {biasFlip.from.toUpperCase()} → {biasFlip.to.toUpperCase()}
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          {fmtTime(biasFlip.ts)} • Price {typeof biasFlip.price === "number" ? biasFlip.price.toFixed(2) : "—"} • Score{" "}
+                          {typeof biasFlip.score === "number" ? biasFlip.score.toFixed(1) : "—"}
+                        </div>
+                        <div className="flex gap-2 pt-2">
+                          <Button
+                            variant="secondary"
+                            className="bg-white/5 border border-white/10"
+                            onClick={() => copyToClipboard(formatXAlert(biasFlip))}
+                          >
+                            Copy Alert for X
+                          </Button>
+                          <Button variant="secondary" className="bg-white/5 border border-white/10" onClick={() => setBiasFlip(null)}>
+                            Dismiss
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="risk" className="mt-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="text-xs text-slate-400 mb-1">Account Size ($)</div>
+                      <Input type="number" value={acctSize} onChange={(e) => setAcctSize(Number(e.target.value))} className="bg-white/5 border-white/10" />
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-400 mb-1">Risk %</div>
+                      <Input type="number" value={riskPct} onChange={(e) => setRiskPct(Number(e.target.value))} className="bg-white/5 border-white/10" step={0.25} />
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-400 mb-1">Entry</div>
+                      <Input type="number" value={entry} onChange={(e) => setEntry(Number(e.target.value))} className="bg-white/5 border-white/10" />
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-400 mb-1">Stop</div>
+                      <Input type="number" value={stop} onChange={(e) => setStop(Number(e.target.value))} className="bg-white/5 border-white/10" />
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      variant="secondary"
+                      className="bg-white/5 border border-white/10 w-full"
+                      onClick={() => {
+                        const p = Number(inputObj?.price);
+                        if (isFinite(p) && p > 0) {
+                          setEntry(p);
+                          toast.success("Entry set to current price");
+                        } else toast("Fetch snapshot first");
+                      }}
+                    >
+                      Use Current Price
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      className="bg-white/5 border border-white/10 w-full"
+                      onClick={() => {
+                        const v = Number(inputObj?.vwap);
+                        if (isFinite(v) && v > 0) {
+                          setStop(v);
+                          toast.success("Stop set to VWAP");
+                        } else toast("No VWAP yet");
+                      }}
+                    >
+                      Use VWAP as Stop
+                    </Button>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      variant={direction === "long" ? "default" : "secondary"}
+                      className={direction === "long" ? "bg-cyan-500/20 border border-cyan-400/30 text-cyan-100 hover:bg-cyan-500/25 w-full" : "bg-white/5 border border-white/10 w-full"}
+                      onClick={() => setDirection("long")}
+                    >
+                      Long
+                    </Button>
+                    <Button
+                      variant={direction === "short" ? "default" : "secondary"}
+                      className={direction === "short" ? "bg-cyan-500/20 border border-cyan-400/30 text-cyan-100 hover:bg-cyan-500/25 w-full" : "bg-white/5 border border-white/10 w-full"}
+                      onClick={() => setDirection("short")}
+                    >
+                      Short
+                    </Button>
+                  </div>
+
+                  <Separator className="bg-white/10" />
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <Metric label="Risk ($)" value={fmtMoney(riskDollars)} />
+                    <Metric label="Stop Distance" value={stopDistance ? fmtNum(stopDistance, 2) : "—"} />
+                    <Metric label="Shares" value={shares ?? "—"} />
+                    <Metric label="Position $" value={positionValue ? fmtMoney(positionValue) : "—"} />
+                  </div>
+
+                  <Card className="border-white/10 bg-black/20">
+                    <CardContent className="p-4">
+                      <div className="text-xs text-slate-400">Targets (R multiples)</div>
+                      <div className="mt-2 text-sm text-slate-200">
+                        {rTargets ? (
+                          <>
+                            1R: <b>{fmtNum(rTargets.r1, 2)}</b> • 2R: <b>{fmtNum(rTargets.r2, 2)}</b> • 3R: <b>{fmtNum(rTargets.r3, 2)}</b>
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </div>
+                      <div className="mt-2 text-xs text-slate-500">
+                        Shares = Risk$ ÷ |Entry − Stop|. Options sizing (premium/delta) can be added next.
+                      </div>
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="adv" className="mt-4 space-y-3">
+                  {!showAdvanced ? (
+                    <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-slate-400">
+                      Advanced JSON is off. Enable it in Settings.
+                    </div>
+                  ) : (
+                    <Card className="border-white/10 bg-black/20">
+                      <CardContent className="p-4 space-y-3">
+                        <div className="text-xs text-slate-400">Snapshot JSON</div>
+                        <Textarea
+                          value={inputJsonText}
+                          onChange={(e) => setInputJsonText(e.target.value)}
+                          className="bg-white/5 border-white/10 min-h-[260px]"
+                        />
+                      </CardContent>
+                    </Card>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          </Card>
+
+          <Card className="border-white/10 bg-white/5">
+            <CardContent className="p-4 text-xs text-slate-400 leading-relaxed">
+              <div className="font-semibold text-slate-200">Gumroad Ready Notes</div>
+              <div className="mt-1">
+                Next: add a /help page (FAQ + methodology) + a changelog.
+              </div>
+              <div className="mt-2 text-slate-500">
+                Not financial advice • Data delayed depending on feed • Built by @bptrades
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+
+      <footer className="mx-auto max-w-7xl px-4 pb-8 text-xs text-slate-500">
+        <div className="flex items-center justify-between border-t border-white/10 pt-4">
+          <div>Retail Weapon Pack • v0.1.0</div>
+          <div>© {new Date().getFullYear()} bptrades</div>
+        </div>
+      </footer>
     </div>
   );
 }
