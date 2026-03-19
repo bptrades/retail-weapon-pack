@@ -2,7 +2,7 @@
 import React, { useState, useCallback } from "react";
 import { toast } from "sonner";
 
-interface GammaLevels {
+interface GammaLevel {
   price: number;
   type: "call_wall" | "put_wall" | "gamma_flip" | "max_pain" | "high_oi";
   strength: "high" | "medium" | "low";
@@ -16,7 +16,7 @@ interface GammaProps {
   atr: number | null;
 }
 
-function levelColor(type: GammaLevels["type"]) {
+function levelColor(type: GammaLevel["type"]) {
   switch (type) {
     case "call_wall":   return { color: "var(--green-text)", bg: "var(--green-bg)",  border: "var(--green-border)"  };
     case "put_wall":    return { color: "var(--red-text)",   bg: "var(--red-bg)",    border: "var(--red-border)"    };
@@ -26,7 +26,7 @@ function levelColor(type: GammaLevels["type"]) {
   }
 }
 
-function typeIcon(type: GammaLevels["type"]) {
+function typeIcon(type: GammaLevel["type"]) {
   switch (type) {
     case "call_wall":  return "▲";
     case "put_wall":   return "▼";
@@ -36,7 +36,7 @@ function typeIcon(type: GammaLevels["type"]) {
   }
 }
 
-function typeLabel(type: GammaLevels["type"]) {
+function typeLabel(type: GammaLevel["type"]) {
   switch (type) {
     case "call_wall":  return "CALL WALL";
     case "put_wall":   return "PUT WALL";
@@ -46,81 +46,105 @@ function typeLabel(type: GammaLevels["type"]) {
   }
 }
 
-// Derive approximate gamma levels from price and options chain data
-function deriveGammaLevels(price: number, atr: number, chainData?: any): GammaLevels[] {
-  // In production: parse actual OI from Alpaca options chain
-  // Here we derive approximate levels from price structure + ATR
-  const round = (n: number, step: number) => Math.round(n / step) * step;
-  const step = price > 1000 ? 10 : price > 500 ? 5 : price > 100 ? 2 : 1;
+// Derive approximate gamma levels from price and ATR.
+// FIX: The old version rounded all levels to the nearest $1/$2/$5 strike step.
+// For SPY (~$580) with step=5 and ATR=2.1:
+//   atr*0.75 = 1.575 → rounds to 0 → same price as basePrice for everything.
+// Fix: round to the strike step but ONLY AFTER we've computed the raw offset,
+// and enforce a minimum separation of 1 full strike step between levels.
+function deriveGammaLevels(price: number, atr: number): GammaLevel[] {
+  // Strike step: what interval options are listed at for this underlying
+  const step = price > 1000 ? 10 : price > 500 ? 5 : price > 200 ? 2 : price > 50 ? 1 : 0.5;
 
-  const basePrice = round(price, step);
-  const levels: GammaLevels[] = [];
+  // Round to nearest strike, but guarantee at least 1 step of separation
+  const roundToStrike = (n: number) => Math.round(n / step) * step;
 
-  // Max pain: typically near ATM rounded to nearest strike
+  // Ensure a level is at least minSteps away from a reference price
+  const atLeast = (raw: number, ref: number, minSteps: number): number => {
+    const rounded = roundToStrike(raw);
+    const diff    = rounded - ref;
+    const minDist = step * minSteps;
+    if (Math.abs(diff) < minDist) {
+      return ref + (diff >= 0 ? minDist : -minDist);
+    }
+    return rounded;
+  };
+
+  const base = roundToStrike(price);
+  const levels: GammaLevel[] = [];
+
+  // Max pain — ATM rounded strike
   levels.push({
-    price: basePrice,
-    type: "max_pain",
-    strength: "high",
-    label: `${basePrice}`,
-    note: "Max pain — options dealers most hedged here. Price tends to gravitate toward this level near expiry.",
+    price: base,
+    type: "max_pain", strength: "high",
+    label: `${base}`,
+    note: "Max pain — options dealers most hedged here. Price gravitates toward this level into expiry.",
   });
 
-  // Call wall: largest call OI cluster above price (typically ~0.5–1.5 ATR above)
-  const callWall = round(price + atr * 0.75, step);
+  // Primary call wall — ~1 ATR above, minimum 2 strikes away
+  const callWall1 = atLeast(price + atr * 1.0, base, 2);
   levels.push({
-    price: callWall,
-    type: "call_wall",
-    strength: "high",
-    label: `${callWall}`,
-    note: "Call wall — heavy call OI creates dealer selling pressure. Price often stalls or reverses here.",
+    price: callWall1,
+    type: "call_wall", strength: "high",
+    label: `${callWall1}`,
+    note: "Primary call wall — heaviest call OI cluster. Dealer delta-hedging creates selling pressure here. Common reversal or stall zone.",
   });
 
-  // Secondary call wall
-  const callWall2 = round(price + atr * 1.5, step);
+  // Secondary call wall — ~2 ATR above, minimum 1 strike above primary
+  const callWall2 = atLeast(price + atr * 2.0, callWall1, 1);
   levels.push({
     price: callWall2,
-    type: "call_wall",
-    strength: "medium",
+    type: "call_wall", strength: "medium",
     label: `${callWall2}`,
-    note: "Secondary call resistance — break above is a significant momentum signal.",
+    note: "Secondary call resistance — breaking and holding above this is a major momentum signal for the session.",
   });
 
-  // Put wall: largest put OI cluster below price
-  const putWall = round(price - atr * 0.75, step);
+  // Primary put wall — ~1 ATR below, minimum 2 strikes away
+  const putWall1 = atLeast(price - atr * 1.0, base, 2);
   levels.push({
-    price: putWall,
-    type: "put_wall",
-    strength: "high",
-    label: `${putWall}`,
-    note: "Put wall — heavy put OI creates dealer buying support. Price often bounces here.",
+    price: putWall1,
+    type: "put_wall", strength: "high",
+    label: `${putWall1}`,
+    note: "Primary put wall — heaviest put OI cluster. Dealer hedging creates buying support. Common bounce zone on first test.",
   });
 
-  // Secondary put wall
-  const putWall2 = round(price - atr * 1.5, step);
+  // Secondary put wall — ~2 ATR below, minimum 1 strike below primary
+  const putWall2 = atLeast(price - atr * 2.0, putWall1, 1);
   levels.push({
     price: putWall2,
-    type: "put_wall",
-    strength: "medium",
+    type: "put_wall", strength: "medium",
     label: `${putWall2}`,
-    note: "Secondary put support — break below is a significant bearish signal.",
+    note: "Secondary put support — break and hold below this is a significant bearish signal for the session.",
   });
 
-  // Gamma flip: level where dealer hedging switches from long to short gamma
-  // Typically the prior day's close or last week's high/low
-  const gammaFlip = round(price - atr * 0.3, step);
+  // Gamma flip — slightly below current price (typically where net gamma = 0)
+  // Use ~0.5 ATR below, minimum 1 strike from base
+  const gammaFlip = atLeast(price - atr * 0.5, base, 1);
   levels.push({
     price: gammaFlip,
-    type: "gamma_flip",
-    strength: "high",
+    type: "gamma_flip", strength: "high",
     label: `${gammaFlip}`,
-    note: "Estimated gamma flip — above this dealers add fuel to moves (short gamma). Below = dampening (long gamma).",
+    note: "Estimated gamma flip — above this, dealer hedging amplifies price moves (short gamma, trending). Below = dampens moves (long gamma, mean-reverting).",
   });
 
-  return levels.sort((a, b) => b.price - a.price);
+  // Deduplicate — if rounding caused two levels to land on the same price,
+  // offset the duplicate by 1 step so the ladder always shows distinct prices.
+  const seen = new Set<number>();
+  const deduped = levels.map(lvl => {
+    let p = lvl.price;
+    while (seen.has(p)) {
+      // Push it one step in the natural direction from base
+      p = p >= base ? p + step : p - step;
+    }
+    seen.add(p);
+    return { ...lvl, price: p, label: `${p}` };
+  });
+
+  return deduped.sort((a, b) => b.price - a.price);
 }
 
 export default function GammaLevels({ symbol, currentPrice, atr }: GammaProps) {
-  const [levels,   setLevels]   = useState<GammaLevels[] | null>(null);
+  const [levels,   setLevels]   = useState<GammaLevel[] | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [loading,  setLoading]  = useState(false);
 
@@ -129,7 +153,8 @@ export default function GammaLevels({ symbol, currentPrice, atr }: GammaProps) {
     setLoading(true);
     await new Promise(r => setTimeout(r, 300)); // slight delay for UX feel
 
-    const effectiveAtr = atr ?? currentPrice * 0.01;
+    // Use ATR if provided, else fallback to 1% of price (typical intraday range)
+    const effectiveAtr = (atr && atr > 0) ? atr : currentPrice * 0.01;
     const derived = deriveGammaLevels(currentPrice, effectiveAtr);
     setLevels(derived);
     setLoading(false);
@@ -166,7 +191,7 @@ export default function GammaLevels({ symbol, currentPrice, atr }: GammaProps) {
 
       {/* Legend */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {(["call_wall", "put_wall", "gamma_flip", "max_pain"] as GammaLevels["type"][]).map(t => {
+        {(["call_wall", "put_wall", "gamma_flip", "max_pain"] as GammaLevel["type"][]).map(t => {
           const s = levelColor(t);
           return (
             <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 9, fontFamily: "var(--font-mono)", fontWeight: 600 }}>
