@@ -933,66 +933,59 @@ export default function Page() {
   return (
     <div className="min-h-screen" style={{background:"var(--bg-1)",color:"var(--t-1)"}}>
 
-      {/* ── TopBar ── */}
-      <div className="topbar">
-        <div className="topbar-inner">
-          <div style={{display:"flex",alignItems:"center",gap:12}}>
-            <div style={{position:"relative"}}>
-              <div style={{width:32,height:32,borderRadius:8,background:"var(--cyan-bg)",border:"1px solid var(--cyan-border)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                <span style={{fontFamily:"var(--font-mono)",fontSize:9,fontWeight:700,color:"var(--cyan-text)",letterSpacing:"0.1em"}}>RWP</span>
-              </div>
-              <span className="pulse-dot" style={{position:"absolute",top:-2,right:-2,width:6,height:6,borderRadius:"50%",background:"var(--cyan)"}}/>
-            </div>
-            <div>
-              <div style={{fontSize:13,fontWeight:600,lineHeight:1.2,color:"var(--t-1)"}}>Retail Weapon Pack</div>
-              <div style={{fontFamily:"var(--font-mono)",fontSize:9,color:"var(--t-3)",letterSpacing:"0.12em",textTransform:"uppercase",marginTop:1}}>Bias · Alerts · Risk · Flow</div>
-            </div>
-          </div>
-          <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-            <a href="/help"      className="btn btn-ghost" style={{textDecoration:"none",fontSize:10}}>Help</a>
-            <a href="/changelog" className="btn btn-ghost" style={{textDecoration:"none",fontSize:10}}>Changelog</a>
-            <div style={{display:"flex",alignItems:"center",gap:5}}>
-              <span className={`pill ${marketOpen ? "open" : "closed"}`}>
-                <span className={`pill-dot ${marketOpen ? "green pulse-dot" : "muted"}`}/>
-                {marketOpen ? "OPEN" : "CLOSED"}
-              </span>
-              <span className={`pill ${usingLastSession ? "stale" : "live"}`}>{usingLastSession ? "STALE" : "LIVE"}</span>
-              <span className="pill sym" style={{fontFamily:"var(--font-mono)",fontWeight:700}}>{symbol}</span>
-            </div>
-            <EconomicCalendar watchlist={watchlist} />
-            <TradeJournal currentSymbol={symbol} currentPrice={inputObj?.price ?? null} />
-            <button className="btn btn-ghost" onClick={() => refreshSnapshotOnly()}>Fetch</button>
-            <button className="btn btn-primary" onClick={runAIWithSnapshot}>Run AI</button>
-            <button className="btn btn-ghost" onClick={() => { if (plan && inputObj) copyToClipboard(formatXPost(inputObj, plan)); else toast("No plan yet"); }}>Copy X</button>
-            <Dialog>
-              <DialogTrigger asChild>
-                <button className="btn btn-ghost">Settings</button>
-              </DialogTrigger>
-              <DialogContent style={{background:"var(--bg-2)",border:"1px solid var(--border-2)",color:"var(--t-1)"}}>
-                <DialogHeader><DialogTitle style={{fontFamily:"var(--font-sans)"}}>Settings</DialogTitle></DialogHeader>
-                <div style={{display:"flex",flexDirection:"column",gap:16}}>
-                  {[
-                    { label: "Auto refresh",              desc: "Auto fetch snapshot on a timer.", val: autoRefresh,        set: setAutoRefresh        },
-                    { label: "Flip alert sound",           desc: "Beep on bias change.",           val: biasFlipSound,      set: setBiasFlipSound      },
-                    { label: "Auto AI on watchlist click", desc: "Consumes Gemini quota.",         val: autoAiOnWatchClick, set: setAutoAiOnWatchClick },
-                    { label: "Show Advanced JSON",         desc: "Developer debug view.",          val: showAdvanced,       set: setShowAdvanced       },
-                  ].map(({ label, desc, val, set }) => (
-                    <div key={label} style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                      <div>
-                        <div style={{fontSize:12,fontWeight:500,color:"var(--t-1)"}}>{label}</div>
-                        <div style={{fontSize:10,color:"var(--t-3)",marginTop:2}}>{desc}</div>
-                      </div>
-                      <Switch checked={val} onCheckedChange={set} />
+      {/* ── Dashboard action bar (sits below GlobalNav from layout.tsx) ── */}
+      <div style={{
+        background: "var(--bg-0)", borderBottom: "1px solid var(--border-0)",
+        padding: "0 16px", height: 40,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        gap: 8,
+      }}>
+        {/* Status pills */}
+        <div style={{display:"flex",alignItems:"center",gap:5}}>
+          <span className={`pill ${marketOpen ? "open" : "closed"}`}>
+            <span className={`pill-dot ${marketOpen ? "green pulse-dot" : "muted"}`}/>
+            {marketOpen ? "OPEN" : "CLOSED"}
+          </span>
+          <span className={`pill ${usingLastSession ? "stale" : "live"}`}>{usingLastSession ? "STALE" : "LIVE"}</span>
+          <span className="pill sym" style={{fontFamily:"var(--font-mono)",fontWeight:700}}>{symbol}</span>
+          {lastUpdated && <span style={{fontFamily:"var(--font-mono)",fontSize:9,color:"var(--t-4)"}}>Updated {lastUpdated}</span>}
+        </div>
+
+        {/* Quick actions */}
+        <div style={{display:"flex",alignItems:"center",gap:5}}>
+          <EconomicCalendar watchlist={watchlist} />
+          <TradeJournal currentSymbol={symbol} currentPrice={inputObj?.price ?? null} />
+          <button className="btn btn-ghost" style={{fontSize:10}} onClick={() => refreshSnapshotOnly()}>Fetch</button>
+          <button className="btn btn-primary" style={{fontSize:10}} onClick={runAIWithSnapshot}>Run AI</button>
+          <button className="btn btn-ghost" style={{fontSize:10}} onClick={() => { if (plan && inputObj) copyToClipboard(formatXPost(inputObj, plan)); else toast("No plan yet"); }}>Copy X</button>
+          <Dialog>
+            <DialogTrigger asChild>
+              <button className="btn btn-ghost" style={{fontSize:10}}>Settings</button>
+            </DialogTrigger>
+            <DialogContent style={{background:"var(--bg-2)",border:"1px solid var(--border-2)",color:"var(--t-1)"}}>
+              <DialogHeader><DialogTitle style={{fontFamily:"var(--font-sans)"}}>Settings</DialogTitle></DialogHeader>
+              <div style={{display:"flex",flexDirection:"column",gap:16}}>
+                {[
+                  { label: "Auto refresh",              desc: "Auto fetch snapshot on a timer.", val: autoRefresh,        set: setAutoRefresh        },
+                  { label: "Flip alert sound",           desc: "Beep on bias change.",           val: biasFlipSound,      set: setBiasFlipSound      },
+                  { label: "Auto AI on watchlist click", desc: "Consumes Gemini quota.",         val: autoAiOnWatchClick, set: setAutoAiOnWatchClick },
+                  { label: "Show Advanced JSON",         desc: "Developer debug view.",          val: showAdvanced,       set: setShowAdvanced       },
+                ].map(({ label, desc, val, set }) => (
+                  <div key={label} style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <div>
+                      <div style={{fontSize:12,fontWeight:500,color:"var(--t-1)"}}>{label}</div>
+                      <div style={{fontSize:10,color:"var(--t-3)",marginTop:2}}>{desc}</div>
                     </div>
-                  ))}
-                  <div>
-                    <div className="label-xs" style={{marginBottom:6}}>Refresh interval (sec)</div>
-                    <input className="inp" type="number" value={refreshSeconds} onChange={(e) => setRefreshSeconds(Number(e.target.value))} min={10} max={600} />
+                    <Switch checked={val} onCheckedChange={set} />
                   </div>
+                ))}
+                <div>
+                  <div className="label-xs" style={{marginBottom:6}}>Refresh interval (sec)</div>
+                  <input className="inp" type="number" value={refreshSeconds} onChange={(e) => setRefreshSeconds(Number(e.target.value))} min={10} max={600} />
                 </div>
-              </DialogContent>
-            </Dialog>
-          </div>
+              </div>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 
